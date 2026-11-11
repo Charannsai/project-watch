@@ -33,19 +33,20 @@ jobs:
           Get-Content $e -ErrorAction SilentlyContinue | Write-Host
           if ($p.HasExited) { Write-Host "A: exited early, code $($p.ExitCode) (runner has no OpenGL 2.0 driver)"; exit 1 }
           Stop-Process -Id $p.Id -Force
-      - name: Startup check B - same exe with Mesa llvmpipe software OpenGL, screenshot
+      - name: Startup check B - same exe with a software OpenGL DLL (Qt opengl32sw / Mesa llvmpipe), screenshot
         shell: pwsh
         env:
           PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome-b
           RUST_BACKTRACE: "1"
           GALLIUM_DRIVER: llvmpipe
         run: |
-          Invoke-WebRequest -Uri https://github.com/pal1000/mesa-dist-win/releases/download/26.2.6/mesa3d-26.2.6-release-msvc.7z -OutFile mesa.7z
-          7z x mesa.7z -omesa -y | Out-Null
-          Get-ChildItem mesa -Recurse -Filter *.dll | Select-Object -First 30 FullName | Out-String | Write-Host
+          Invoke-WebRequest -Uri https://download.qt.io/development_releases/prebuilt/llvmpipe/windows/opengl32sw-64-mesa_12_0_rc2.7z -OutFile gl.7z
+          7z x gl.7z -ogl -y | Out-Null
+          Get-ChildItem gl -Recurse | Select-Object FullName,Length | Out-String | Write-Host
           New-Item -ItemType Directory -Force -Path testdir | Out-Null
           Copy-Item target-diag\release\project-watch.exe testdir\
-          Copy-Item mesa\x64\*.dll testdir\ -ErrorAction SilentlyContinue
+          $dll = Get-ChildItem gl -Recurse -Filter opengl32sw.dll | Select-Object -First 1
+          Copy-Item $dll.FullName testdir\opengl32.dll
           $o = "$env:RUNNER_TEMP\b-out.txt"; $e = "$env:RUNNER_TEMP\b-err.txt"
           $p = Start-Process -FilePath testdir\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
           Start-Sleep -Seconds 12
