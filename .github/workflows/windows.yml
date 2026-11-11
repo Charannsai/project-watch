@@ -20,20 +20,50 @@ jobs:
           (Get-Content src/main.rs) | Where-Object { $_ -notmatch 'windows_subsystem' } | Set-Content src/main.rs
           cargo build --release --target-dir target-diag
           git checkout src/main.rs
-      - name: Startup check (launch console build 8s, capture all output)
+      - name: Startup check A - plain runner (no GPU, OpenGL 1.1 only; failure expected, shows the exact error)
+        continue-on-error: true
         shell: pwsh
         env:
-          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome
+          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome-a
           RUST_BACKTRACE: "1"
         run: |
-          $o = "$env:RUNNER_TEMP\out.txt"; $e = "$env:RUNNER_TEMP\err.txt"
+          $o = "$env:RUNNER_TEMP\a-out.txt"; $e = "$env:RUNNER_TEMP\a-err.txt"
           $p = Start-Process -FilePath target-diag\release\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
           Start-Sleep -Seconds 8
-          Write-Host "--- stdout"; Get-Content $o -ErrorAction SilentlyContinue | Write-Host
-          Write-Host "--- stderr"; Get-Content $e -ErrorAction SilentlyContinue | Write-Host
-          Write-Host "--- opengl32 present:"; Test-Path "$env:WINDIR\System32\opengl32.dll" | Write-Host
-          if ($p.HasExited) { Write-Host "EXITED early, code $($p.ExitCode)"; exit 1 }
-          Write-Host "still running after 8s"; Stop-Process -Id $p.Id -Force
+          Get-Content $e -ErrorAction SilentlyContinue | Write-Host
+          if ($p.HasExited) { Write-Host "A: exited early, code $($p.ExitCode) (runner has no OpenGL 2.0 driver)"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+      - name: Startup check B - same exe with Mesa llvmpipe software OpenGL, screenshot
+        shell: pwsh
+        env:
+          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome-b
+          RUST_BACKTRACE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          Invoke-WebRequest -Uri https://github.com/pal1000/mesa-dist-win/releases/download/26.2.6/mesa3d-26.2.6-release-msvc.7z -OutFile mesa.7z
+          7z x mesa.7z -omesa -y | Out-Null
+          Get-ChildItem mesa -Recurse -Filter *.dll | Select-Object -First 30 FullName | Out-String | Write-Host
+          New-Item -ItemType Directory -Force -Path testdir | Out-Null
+          Copy-Item target-diag\release\project-watch.exe testdir\
+          Copy-Item mesa\x64\*.dll testdir\ -ErrorAction SilentlyContinue
+          $o = "$env:RUNNER_TEMP\b-out.txt"; $e = "$env:RUNNER_TEMP\b-err.txt"
+          $p = Start-Process -FilePath testdir\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+          Start-Sleep -Seconds 12
+          Get-Content $e -ErrorAction SilentlyContinue | Write-Host
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+          $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+          New-Item -ItemType Directory -Force -Path shots | Out-Null
+          $bmp.Save("shots\windows-startup.png")
+          if ($p.HasExited) { Write-Host "B: EXITED early, code $($p.ExitCode)"; exit 1 }
+          Write-Host "B: still running after 12s"; Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-screenshot
+          path: shots/
+          if-no-files-found: ignore
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
