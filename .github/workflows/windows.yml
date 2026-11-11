@@ -1,0 +1,21 @@
+name: windows-build
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-watch-windows
+          path: target/release/project-watch.exe

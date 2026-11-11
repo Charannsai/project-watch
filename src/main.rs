@@ -1,3 +1,4 @@
+#![cfg_attr(all(not(debug_assertions), windows), windows_subsystem = "windows")]
 use std::path::PathBuf;
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
@@ -293,7 +294,7 @@ enum Act {
 
 struct App {
     ws: Store, sm: Store, use_sample: bool, asof_buf: String, sel: Option<String>, tab: Tab, actions_view: bool,
-    what_task: Option<String>, what_slip: f32, copied: bool, f: Forms, notice: String, new_open: bool, confirm_reset: bool, show_arch: bool,
+    what_task: Option<String>, what_slip: f32, copied: bool, f: Forms, notice: String, new_open: bool, confirm_reset: bool, show_arch: bool, anim_key: String, anim_t0: f64,
 }
 
 fn setup(ctx: &egui::Context) {
@@ -331,7 +332,7 @@ fn task_combo(ui: &mut egui::Ui, id: &str, cur: &mut String, tasks: &[(String, S
 }
 fn days_over(due: &str, asof: f64) -> Option<i64> { parse_date(due).map(|d| (asof - d).round() as i64).filter(|x| *x > 0) }
 
-fn timeline(ui: &mut egui::Ui, ctx: &egui::Context, c: &Calc, asof: f64) {
+fn timeline(ui: &mut egui::Ui, _ctx: &egui::Context, c: &Calc, asof: f64, ease: f32) {
     let rows = c.tasks.len() as f32;
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), rows * 38.0 + 30.0), Sense::hover());
     let p = ui.painter_at(rect);
@@ -341,7 +342,6 @@ fn timeline(ui: &mut egui::Ui, ctx: &egui::Context, c: &Calc, asof: f64) {
     let xs = |d: f64| lx + ((d - t0) / (t1 - t0)) as f32 * (rx - lx);
     let (mut y, mut m) = { let (yy, mm, _) = civil_from_days(t0); (yy, mm) };
     loop { m += 1; if m > 12 { m = 1; y += 1; } let d = days_from_civil(y, m, 1); if d > t1 { break; } let x = xs(d); p.line_segment([Pos2::new(x, rect.top() + 16.0), Pos2::new(x, rect.bottom())], Stroke::new(1.0, Color32::from_rgb(0xf0, 0xf0, 0xf0))); p.text(Pos2::new(x + 4.0, rect.top()), egui::Align2::LEFT_TOP, MON[(m - 1) as usize], egui::FontId::proportional(10.5), MUTED); }
-    let ease = ctx.animate_value_with_time(egui::Id::new(("tl", &c.p.id)), 1.0, 0.6);
     for (i, x) in c.tasks.iter().enumerate() {
         let top = rect.top() + 28.0 + i as f32 * 38.0;
         p.text(Pos2::new(rect.left(), top + 9.0), egui::Align2::LEFT_CENTER, &x.t.name, egui::FontId::proportional(12.5), INK);
@@ -563,29 +563,43 @@ impl eframe::App for App {
                 ui.horizontal(|ui| { let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 22.0), Sense::hover()); mark(ui.painter(), r.center(), c.status); ui.label(semi(&c.p.name, 20.0)); ui.label(small(label(c.status))); });
                 ui.label(small(&format!("{}  ·  responsible: {}  ·  {}  ·  budget Rs {} lakh  ·  spent Rs {} lakh", c.p.contractor, if c.p.owner.is_empty() { "not assigned" } else { &c.p.owner }, c.p.id, c.p.budget, c.p.spent)));
                 ui.add_space(6.0);
+                let mut sel_rect: Option<Rect> = None;
                 ui.horizontal(|ui| {
                     for t in [Tab::Overview, Tab::Plan, Tab::Blockers, Tab::Updates, Tab::Recovery] {
                         let on = self.tab == t;
                         let n = match t { Tab::Blockers if c.open_blockers > 0 => format!("{} ({})", t.name(), c.open_blockers), _ => t.name().to_string() };
                         let r = ui.add(egui::Button::new(if on { semi(&n, 13.5) } else { RichText::new(n).size(13.5).color(MUTED) }).fill(Color32::TRANSPARENT).stroke(Stroke::NONE));
-                        if on { let b = r.rect; ui.painter().line_segment([Pos2::new(b.left() + 8.0, b.bottom() + 1.0), Pos2::new(b.right() - 8.0, b.bottom() + 1.0)], Stroke::new(2.0, INK)); }
+                        if on { sel_rect = Some(r.rect); }
                         if r.clicked() { self.tab = t; }
                     }
                 });
+                if let Some(b) = sel_rect {
+                    let cx = ctx.animate_value_with_time(egui::Id::new("tabx"), b.center().x, 0.22);
+                    let hw = ctx.animate_value_with_time(egui::Id::new("tabw"), b.width() / 2.0 - 8.0, 0.22);
+                    ui.painter().line_segment([Pos2::new(cx - hw, b.bottom() + 1.0), Pos2::new(cx + hw, b.bottom() + 1.0)], Stroke::new(2.0, INK));
+                }
                 ui.separator();
+                let now = ctx.input(|i| i.time);
+                let key = format!("{}|{}", pid, self.tab.name());
+                if self.anim_key != key { self.anim_key = key; self.anim_t0 = now; }
+                let lin = (((now - self.anim_t0) / 0.38) as f32).clamp(0.0, 1.0);
+                if lin < 1.0 { ctx.request_repaint(); }
+                let ease = 1.0 - (1.0 - lin).powi(3);
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.set_opacity(0.15 + 0.85 * ease);
+                    ui.add_space((1.0 - ease) * 10.0);
                     match self.tab {
                         Tab::Overview => {
                             ui.horizontal(|ui| {
                                 let kp = |ui: &mut egui::Ui, v: String, l: &str| { ui.vertical(|ui| { ui.set_width(150.0); ui.label(semi(&v, 22.0)); ui.label(small(l)); }); };
-                                kp(ui, format!("{:.0}% / {:.0}%", c.actual * 100.0, c.planned * 100.0), "done / planned today");
+                                kp(ui, format!("{:.0}% / {:.0}%", c.actual * 100.0 * ease as f64, c.planned * 100.0 * ease as f64), "done / planned today");
                                 kp(ui, c.spi.map(|x| format!("{:.2}", x)).unwrap_or("-".into()), "schedule ratio");
                                 kp(ui, c.cpi.map(|x| format!("{:.2}", x)).unwrap_or("-".into()), "cost ratio");
-                                kp(ui, if c.slip > 0 { format!("+{} d", c.slip) } else { "0 d".into() }, &format!("forecast finish {}", fmt(c.fend)));
+                                kp(ui, if c.slip > 0 { format!("+{} d", (c.slip as f64 * ease as f64).round()) } else { "0 d".into() }, &format!("forecast finish {}", fmt(c.fend)));
                             });
                             if c.tasks.is_empty() { sec(ui, "NO TASKS YET"); ui.label("Add tasks on the Plan tab to see the timeline and forecast."); } else {
                                 sec(ui, "PLANNED AND ACTUAL");
-                                timeline(ui, ctx, c, asof);
+                                timeline(ui, ctx, c, asof, ease);
                                 ui.label(small("Dark fill is reported progress. Grey is forecast overrun at the current pace. Thin lines show dependencies."));
                             }
                             sec(ui, &format!("WHY IT IS {}", label(c.status).to_uppercase()));
@@ -776,7 +790,7 @@ fn main() -> eframe::Result {
         let dir = data_dir();
         let ws = Store::load(dir.join("workspace.pw"), false).unwrap_or_else(|| Store::new(dir.join("workspace.pw"), false));
         let sm = Store::load(dir.join("sample.pw"), true).unwrap_or_else(sample_store);
-        let mut app = App { asof_buf: ws.asof.clone(), ws, sm, use_sample: false, sel: None, tab: Tab::Overview, actions_view: false, what_task: None, what_slip: 0.0, copied: false, f: Forms::default(), notice: String::new(), new_open: false, confirm_reset: false, show_arch: false };
+        let mut app = App { asof_buf: ws.asof.clone(), ws, sm, use_sample: false, sel: None, tab: Tab::Overview, actions_view: false, what_task: None, what_slip: 0.0, copied: false, f: Forms::default(), notice: String::new(), new_open: false, confirm_reset: false, show_arch: false, anim_key: String::new(), anim_t0: 0.0 };
         let mut sample_flag = false;
         for a in args.iter().skip(1) { if a == "--sample" { sample_flag = true; } else if let Ok(t) = std::fs::read_to_string(a) { app.import_text(&t); } }
         if sample_flag { app.switch(true); }
