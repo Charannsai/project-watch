@@ -64,9 +64,9 @@ fn parse_csv(text: &str) -> Vec<Vec<String>> {
 
 // ---------- data ----------
 #[derive(Clone)]
-struct Task { id: String, name: String, start: f64, end: f64, pct: f64, dep: String }
+struct Task { id: String, name: String, start: f64, end: f64, pct: f64, dep: String, arch: bool }
 #[derive(Clone)]
-struct Project { id: String, name: String, contractor: String, owner: String, budget: f64, spent: f64, rejected: u32, tasks: Vec<Task> }
+struct Project { id: String, name: String, contractor: String, owner: String, budget: f64, spent: f64, rejected: u32, tasks: Vec<Task>, arch: bool }
 #[derive(Clone)]
 struct Blocker { id: u32, pid: String, task: String, kind: String, text: String, owner: String, due: String, open: bool, opened: String, resolved: String }
 #[derive(Clone)]
@@ -96,13 +96,21 @@ fn parse_projects(text: &str) -> Result<Vec<Project>, String> {
         if id.is_empty() { continue; }
         let (s, e) = (parse_date(&g("start")), parse_date(&g("end")));
         let pc = g("pct_complete").parse::<f64>().ok();
-        let (s, e, pc) = match (s, e, pc) { (Some(s), Some(e), Some(p)) if e > s => (s, e, p), _ => return Err(format!("Row {}: check dates (YYYY-MM-DD, end after start) and pct_complete.", k + 1)) };
-        let t = Task { id: g("task_id"), name: g("task"), start: s, end: e, pct: (pc / 100.0).clamp(0.0, 1.0), dep: g("depends_on") };
+        let (s, e, pc) = match (s, e, pc) { (Some(s), Some(e), Some(p)) if e > s && (0.0..=100.0).contains(&p) => (s, e, p), _ => return Err(format!("Row {}: check dates (YYYY-MM-DD, end after start) and pct_complete (0 to 100).", k + 1)) };
+        let t = Task { id: g("task_id"), name: g("task"), start: s, end: e, pct: (pc / 100.0).clamp(0.0, 1.0), dep: g("depends_on"), arch: false };
         if let Some(p) = out.iter_mut().find(|p| p.id == id) { p.tasks.push(t); } else {
-            out.push(Project { id, name: g("project"), contractor: g("contractor"), owner: g("owner"), budget: g("budget_lakh").parse().unwrap_or(0.0), spent: g("spent_lakh").parse().unwrap_or(0.0), rejected: g("rejected_lots").parse().unwrap_or(0), tasks: vec![t] });
+            out.push(Project { id, name: g("project"), contractor: g("contractor"), owner: g("owner"), budget: g("budget_lakh").parse().unwrap_or(0.0), spent: g("spent_lakh").parse().unwrap_or(0.0), rejected: g("rejected_lots").parse().unwrap_or(0), tasks: vec![t], arch: false });
         }
     }
     if out.is_empty() { return Err("No project rows found.".into()); }
+    for p in &out {
+        if p.budget < 0.0 || p.spent < 0.0 { return Err(format!("Project {}: budget and spend cannot be negative.", p.id)); }
+        for (i, t) in p.tasks.iter().enumerate() {
+            if t.id.is_empty() { return Err(format!("Project {}: a task has no task_id.", p.id)); }
+            if p.tasks[..i].iter().any(|x| x.id == t.id) { return Err(format!("Project {}: task_id {} appears twice.", p.id, t.id)); }
+            if !t.dep.is_empty() && !p.tasks[..i].iter().any(|x| x.id == t.dep) { return Err(format!("Project {}: task {} depends on {}, which is not an earlier task of the same project.", p.id, t.id, t.dep)); }
+        }
+    }
     Ok(out)
 }
 
@@ -125,13 +133,14 @@ impl Store {
         let mut s = String::new();
         s.push_str(&format!("M\t{}\t{}\n", esc(&self.asof), self.next));
         for p in &self.projects {
-            s.push_str(&format!("P\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", esc(&p.id), esc(&p.name), esc(&p.contractor), esc(&p.owner), p.budget, p.spent, p.rejected));
-            for t in &p.tasks { s.push_str(&format!("T\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", esc(&p.id), esc(&t.id), esc(&t.name), iso(t.start), iso(t.end), t.pct, esc(&t.dep))); }
+            s.push_str(&format!("P\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", esc(&p.id), esc(&p.name), esc(&p.contractor), esc(&p.owner), p.budget, p.spent, p.rejected, if p.arch { 1 } else { 0 }));
+            for t in &p.tasks { s.push_str(&format!("T\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", esc(&p.id), esc(&t.id), esc(&t.name), iso(t.start), iso(t.end), t.pct, esc(&t.dep), if t.arch { 1 } else { 0 })); }
         }
         for b in &self.blockers { s.push_str(&format!("B\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n", b.id, esc(&b.pid), esc(&b.task), esc(&b.kind), esc(&b.text), esc(&b.owner), esc(&b.due), if b.open { 1 } else { 0 }, esc(&b.opened), esc(&b.resolved))); }
         for u in &self.updates { s.push_str(&format!("U\t{}\t{}\t{}\t{}\t{}\t{}\n", u.id, esc(&u.pid), esc(&u.date), esc(&u.kind), esc(&u.note), esc(&u.evidence))); }
         for r in &self.plans { s.push_str(&format!("R\t{}\t{}\t{}\t{}\t{}\t{}\n", esc(&r.pid), esc(&r.committed), r.base_slip, esc(&r.steps), esc(&r.owner), esc(&r.created))); }
         if let Some(d) = self.path.parent() { let _ = std::fs::create_dir_all(d); }
+        if self.path.exists() { let _ = std::fs::copy(&self.path, self.path.with_extension("bak")); }
         let tmp = self.path.with_extension("tmp");
         if std::fs::write(&tmp, s).is_ok() { let _ = std::fs::rename(&tmp, &self.path); }
     }
@@ -143,8 +152,8 @@ impl Store {
             let g = |i: usize| f.get(i).cloned().unwrap_or_default();
             match f[0].as_str() {
                 "M" => { st.asof = g(1); st.next = g(2).parse().unwrap_or(1); }
-                "P" => st.projects.push(Project { id: g(1), name: g(2), contractor: g(3), owner: g(4), budget: g(5).parse().unwrap_or(0.0), spent: g(6).parse().unwrap_or(0.0), rejected: g(7).parse().unwrap_or(0), tasks: vec![] }),
-                "T" => { if let Some(p) = st.projects.iter_mut().find(|p| p.id == g(1)) { p.tasks.push(Task { id: g(2), name: g(3), start: parse_date(&g(4)).unwrap_or(0.0), end: parse_date(&g(5)).unwrap_or(1.0), pct: g(6).parse().unwrap_or(0.0), dep: g(7) }); } }
+                "P" => st.projects.push(Project { id: g(1), name: g(2), contractor: g(3), owner: g(4), budget: g(5).parse().unwrap_or(0.0), spent: g(6).parse().unwrap_or(0.0), rejected: g(7).parse().unwrap_or(0), tasks: vec![], arch: g(8) == "1" }),
+                "T" => { if let Some(p) = st.projects.iter_mut().find(|p| p.id == g(1)) { p.tasks.push(Task { id: g(2), name: g(3), start: parse_date(&g(4)).unwrap_or(0.0), end: parse_date(&g(5)).unwrap_or(1.0), pct: g(6).parse().unwrap_or(0.0), dep: g(7), arch: g(8) == "1" }); } }
                 "B" => st.blockers.push(Blocker { id: g(1).parse().unwrap_or(0), pid: g(2), task: g(3), kind: g(4), text: g(5), owner: g(6), due: g(7), open: g(8) == "1", opened: g(9), resolved: g(10) }),
                 "U" => st.updates.push(Update { id: g(1).parse().unwrap_or(0), pid: g(2), date: g(3), kind: g(4), note: g(5), evidence: g(6) }),
                 "R" => st.plans.push(Plan { pid: g(1), committed: g(2), base_slip: g(3).parse().unwrap_or(0), steps: g(4), owner: g(5), created: g(6) }),
@@ -201,7 +210,7 @@ struct Calc { p: Project, tasks: Vec<TaskCalc>, planned: f64, actual: f64, spi: 
 
 fn calc(p: &Project, asof: f64, what: Option<(&str, f64)>, blockers: &[Blocker]) -> Calc {
     let mut tc: Vec<TaskCalc> = vec![];
-    for t in &p.tasks {
+    for t in p.tasks.iter().filter(|t| !t.arch) {
         let (own, np) = if t.pct >= 1.0 || asof <= t.start { (t.end, false) }
             else if t.pct > 0.0 { (asof + (1.0 - t.pct) * (asof - t.start) / t.pct, false) }
             else { (t.end + (asof - t.start), true) };
@@ -267,6 +276,7 @@ impl Tab { fn name(self) -> &'static str { match self { Tab::Overview => "Overvi
 struct Forms {
     prog_task: String, prog_for: String, prog_pct: f32, prog_note: String, prog_ev: String,
     spend: String, spend_note: String, own: String, rej: String, det_for: String,
+    confirm: String, b_edit: u32, rs_name: String, nm: String, ct: String, bg: String,
     rs_task: String, rs_for: String, rs_start: String, rs_end: String, rs_note: String,
     at_name: String, at_start: String, at_end: String, at_dep: String,
     b_task: String, b_kind: String, b_text: String, b_owner: String, b_due: String, res_note: String,
@@ -275,14 +285,15 @@ struct Forms {
 }
 
 enum Act {
-    Progress(String, String, f64, String, String), Spend(String, f64, String), Details(String, String, u32),
-    Resched(String, String, f64, f64, String), AddTask(String, String, f64, f64, String), AddBlocker(Blocker),
+    Progress(String, String, f64, String, String), Spend(String, f64, String), Details(String, String, u32, String, String, f64),
+    ArchTask(String, String, bool), ArchProject(String, bool), EditBlocker(u32, String, String, String, String, String), Reopen(u32), Withdraw(u32),
+    Resched(String, String, f64, f64, String, String), AddTask(String, String, f64, f64, String), AddBlocker(Blocker),
     Resolve(u32, String), StartPlan(Plan), ClosePlan(String, String), NewProject(Project),
 }
 
 struct App {
     ws: Store, sm: Store, use_sample: bool, asof_buf: String, sel: Option<String>, tab: Tab, actions_view: bool,
-    what_task: Option<String>, what_slip: f32, copied: bool, f: Forms, notice: String, new_open: bool, confirm_reset: bool,
+    what_task: Option<String>, what_slip: f32, copied: bool, f: Forms, notice: String, new_open: bool, confirm_reset: bool, show_arch: bool,
 }
 
 fn setup(ctx: &egui::Context) {
@@ -372,17 +383,23 @@ impl App {
                     }
                 }
                 Act::Spend(pid, v, note) => { let mut old = 0.0; if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) { old = p.spent; p.spent = v; } st.log(&pid, "cost", format!("Spend Rs {} -> {} lakh. {}", old, v, note), String::new()); msg = "Spend updated.".into(); }
-                Act::Details(pid, owner, rej) => { if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) { let (oo, or) = (p.owner.clone(), p.rejected); p.owner = owner.clone(); p.rejected = rej; st.log(&pid, "note", format!("Responsible person {} -> {}; rejected lots {} -> {}.", if oo.is_empty() { "none" } else { &oo }, owner, or, rej), String::new()); msg = "Project details updated.".into(); } }
-                Act::Resched(pid, tid, s, e, why) => {
+                Act::Details(pid, owner, rej, name, contractor, budget) => { if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) { let mut ch: Vec<String> = vec![]; if p.owner != owner { ch.push(format!("responsible {} -> {}", if p.owner.is_empty() { "none" } else { &p.owner }, owner)); } if p.rejected != rej { ch.push(format!("rejected lots {} -> {}", p.rejected, rej)); } if p.name != name { ch.push(format!("name {} -> {}", p.name, name)); } if p.contractor != contractor { ch.push(format!("contractor {} -> {}", p.contractor, contractor)); } if p.budget != budget { ch.push(format!("budget Rs {} -> {} lakh", p.budget, budget)); } p.owner = owner; p.rejected = rej; p.name = name; p.contractor = contractor; p.budget = budget; if !ch.is_empty() { st.log(&pid, "note", format!("Details changed: {}.", ch.join("; ")), String::new()); msg = "Project details updated.".into(); } else { msg = "Nothing changed.".into(); } } }
+                Act::ArchTask(pid, tid, on) => { let mut name = String::new(); if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) { if let Some(t) = p.tasks.iter_mut().find(|t| t.id == tid) { t.arch = on; name = t.name.clone(); } if on { for t in p.tasks.iter_mut() { if t.dep == tid { t.dep.clear(); } } } } if on { for b in st.blockers.iter_mut().filter(|b| b.pid == pid && b.task == tid) { b.task.clear(); } } st.log(&pid, "plan", format!("Task {}: {}.{}", if on { "removed from the plan (kept in history, can be restored)" } else { "restored" }, name, if on { " Tasks that waited on it now have no predecessor; its blockers apply to the whole project." } else { "" }), String::new()); msg = if on { "Task removed. It can be restored from the Plan tab.".into() } else { "Task restored.".into() }; }
+                Act::ArchProject(pid, on) => { if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) { p.arch = on; } let n = st.pname(&pid); st.log(&pid, "plan", format!("Project {}: {}.", if on { "archived (hidden from the watch list, kept with its history)" } else { "restored" }, n), String::new()); msg = if on { "Project archived. Use Archived in the list to find or restore it.".into() } else { "Project restored.".into() }; }
+                Act::EditBlocker(id, text, owner, due, kind, task) => { let mut pid = String::new(); let mut ch: Vec<String> = vec![]; if let Some(b) = st.blockers.iter_mut().find(|b| b.id == id) { pid = b.pid.clone(); if b.text != text { ch.push(format!("text \"{}\" -> \"{}\"", b.text, text)); } if b.owner != owner { ch.push(format!("owner {} -> {}", b.owner, owner)); } if b.due != due { ch.push(format!("due {} -> {}", b.due, due)); } if b.kind != kind { ch.push(format!("type {} -> {}", b.kind, kind)); } if b.task != task { ch.push("task changed".into()); } b.text = text; b.owner = owner; b.due = due; b.kind = kind; b.task = task; } if !ch.is_empty() { st.log(&pid, "blocker", format!("Blocker edited: {}.", ch.join("; ")), String::new()); msg = "Blocker updated.".into(); } else { msg = "Nothing changed.".into(); } }
+                Act::Reopen(id) => { let mut info = None; if let Some(b) = st.blockers.iter_mut().find(|b| b.id == id) { b.open = true; b.resolved.clear(); info = Some((b.pid.clone(), b.text.clone())); } if let Some((pid, t)) = info { st.log(&pid, "blocker", format!("Blocker reopened: {}", t), String::new()); msg = "Blocker reopened.".into(); } }
+                Act::Withdraw(id) => { let mut info = None; let asof = st.asof.clone(); if let Some(b) = st.blockers.iter_mut().find(|b| b.id == id) { b.open = false; b.resolved = format!("{} (withdrawn, logged in error)", asof); info = Some((b.pid.clone(), b.text.clone())); } if let Some((pid, t)) = info { st.log(&pid, "blocker", format!("Blocker withdrawn as logged in error: {}", t), String::new()); msg = "Blocker withdrawn. It stays in the resolved list and can be reopened.".into(); } }
+                Act::Resched(pid, tid, s, e, why, newname) => {
                     let mut name = String::new(); let mut before = (0.0, 0.0);
-                    if let Some(t) = st.projects.iter_mut().find(|p| p.id == pid).and_then(|p| p.tasks.iter_mut().find(|t| t.id == tid)) { name = t.name.clone(); before = (t.start, t.end); t.start = s; t.end = e; }
-                    st.log(&pid, "rebaseline", format!("{}: planned {} to {} -> {} to {}. {}", name, iso(before.0), iso(before.1), iso(s), iso(e), why), String::new()); msg = "Dates changed and logged.".into();
+                    if let Some(t) = st.projects.iter_mut().find(|p| p.id == pid).and_then(|p| p.tasks.iter_mut().find(|t| t.id == tid)) { name = t.name.clone(); before = (t.start, t.end); t.start = s; t.end = e; if !newname.is_empty() { t.name = newname.clone(); } }
+                    let ren = if !newname.is_empty() && newname != name { format!(" Renamed to {}.", newname) } else { String::new() };
+                    st.log(&pid, "rebaseline", format!("{}: planned {} to {} -> {} to {}.{} {}", name, iso(before.0), iso(before.1), iso(s), iso(e), ren, why), String::new()); msg = "Task changed and logged.".into();
                 }
                 Act::AddTask(pid, name, s, e, dep) => {
                     if let Some(p) = st.projects.iter_mut().find(|p| p.id == pid) {
                         let mut n = p.tasks.len() + 1; let mut id = format!("{}-{}", pid, n);
                         while p.tasks.iter().any(|t| t.id == id) { n += 1; id = format!("{}-{}", pid, n); }
-                        p.tasks.push(Task { id, name: name.clone(), start: s, end: e, pct: 0.0, dep });
+                        p.tasks.push(Task { id, name: name.clone(), start: s, end: e, pct: 0.0, dep, arch: false });
                     }
                     st.log(&pid, "plan", format!("Task added: {} ({} to {}).", name, iso(s), iso(e)), String::new()); msg = "Task added.".into();
                 }
@@ -430,11 +447,13 @@ impl eframe::App for App {
         let sample = self.use_sample;
         let mut list: Vec<Calc> = vec![];
         for p in &self.store().projects {
+            if p.arch && !self.show_arch { continue; }
             let w = match (&self.sel, &self.what_task) { (Some(s), Some(t)) if *s == p.id => Some((t.as_str(), self.what_slip as f64)), _ => None };
             list.push(calc(p, asof, w, &blockers));
         }
         let rank = |s: Status| match s { Status::Risk => 0, Status::Watch => 1, Status::Ok => 2 };
-        list.sort_by(|a, b| rank(a.status).cmp(&rank(b.status)).then(b.flags.len().cmp(&a.flags.len())).then(b.slip.cmp(&a.slip)));
+
+        list.sort_by(|a, b| a.p.arch.cmp(&b.p.arch).then(rank(a.status).cmp(&rank(b.status))).then(b.flags.len().cmp(&a.flags.len())).then(b.slip.cmp(&a.slip)));
         if self.sel.as_ref().map(|s| !list.iter().any(|c| &c.p.id == s)).unwrap_or(true) { self.sel = list.first().map(|c| c.p.id.clone()); }
         let mut acts: Vec<Act> = vec![];
         let mut switch_to: Option<bool> = None;
@@ -495,7 +514,7 @@ impl eframe::App for App {
                         let on = self.actions_view == a;
                         if ui.add(egui::Button::new(if on { semi(nm, 13.0) } else { RichText::new(nm).size(13.0).color(MUTED) }).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() { self.actions_view = a; }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(16.0); if ui.button("New project").clicked() { self.new_open = true; } });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(16.0); if ui.button("New project").clicked() { self.new_open = true; } if ui.add(egui::Button::new(RichText::new(if self.show_arch { "Hide archived" } else { "Archived" }).size(12.0).color(MUTED)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() { self.show_arch = !self.show_arch; } });
                 });
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -537,8 +556,8 @@ impl eframe::App for App {
             egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::WHITE).inner_margin(egui::Margin::symmetric(32, 22))).show(ctx, |ui| {
                 let Some(c) = list.iter().find(|c| Some(&c.p.id) == self.sel.as_ref()) else { return };
                 let pid = c.p.id.clone();
-                let tasks: Vec<(String, String)> = c.p.tasks.iter().map(|t| (t.id.clone(), t.name.clone())).collect();
-                let open_tasks: Vec<(String, String)> = c.p.tasks.iter().filter(|t| t.pct < 1.0).map(|t| (t.id.clone(), t.name.clone())).collect();
+                let tasks: Vec<(String, String)> = c.p.tasks.iter().filter(|t| !t.arch).map(|t| (t.id.clone(), t.name.clone())).collect();
+                let open_tasks: Vec<(String, String)> = c.p.tasks.iter().filter(|t| t.pct < 1.0 && !t.arch).map(|t| (t.id.clone(), t.name.clone())).collect();
                 let mine_b: Vec<&Blocker> = blockers.iter().filter(|b| b.pid == pid).collect();
                 let plan = plans.iter().find(|p| p.pid == pid);
                 ui.horizontal(|ui| { let (r, _) = ui.allocate_exact_size(Vec2::new(14.0, 22.0), Sense::hover()); mark(ui.painter(), r.center(), c.status); ui.label(semi(&c.p.name, 20.0)); ui.label(small(label(c.status))); });
@@ -597,29 +616,42 @@ impl eframe::App for App {
                             sec(ui, "TASKS");
                             if c.tasks.is_empty() { ui.label(small("No tasks yet. Add the first one below.")); }
                             for x in &c.tasks {
-                                ui.horizontal(|ui| { ui.set_min_width(560.0); ui.label(semi(&x.t.name, 13.0)); ui.label(small(&format!("{} to {}  ·  {:.0}%  ·  forecast {}{}", iso(x.t.start), iso(x.t.end), x.t.pct * 100.0, fmt(x.fend), if x.t.dep.is_empty() { String::new() } else { format!("  ·  after {}", tasks.iter().find(|t| t.0 == x.t.dep).map(|t| t.1.clone()).unwrap_or(x.t.dep.clone())) }))); });
+                                ui.horizontal(|ui| {
+                                    let key = format!("t{}", x.t.id);
+                                    if ui.add(egui::Button::new(RichText::new(if self.f.confirm == key { "Confirm remove" } else { "Remove" }).size(12.0).color(MUTED)).fill(Color32::TRANSPARENT)).clicked() { if self.f.confirm == key { acts.push(Act::ArchTask(pid.clone(), x.t.id.clone(), true)); self.f.confirm.clear(); } else { self.f.confirm = key; } }
+                                    ui.set_min_width(560.0); ui.label(semi(&x.t.name, 13.0)); ui.label(small(&format!("{} to {}  ·  {:.0}%  ·  forecast {}{}", iso(x.t.start), iso(x.t.end), x.t.pct * 100.0, fmt(x.fend), if x.t.dep.is_empty() { String::new() } else { format!("  ·  after {}", tasks.iter().find(|t| t.0 == x.t.dep).map(|t| t.1.clone()).unwrap_or(x.t.dep.clone())) })));
+                                });
+                            }
+                            for t in c.p.tasks.iter().filter(|t| t.arch) {
+                                ui.horizontal(|ui| { ui.label(small(&format!("{} (removed)", t.name))); if ui.add(egui::Button::new(RichText::new("Restore").size(12.0)).fill(Color32::TRANSPARENT)).clicked() { acts.push(Act::ArchTask(pid.clone(), t.id.clone(), false)); } });
                             }
                             if !tasks.is_empty() {
-                                sec(ui, "CHANGE PLANNED DATES (RECORDED AS A REBASELINE)");
+                                sec(ui, "RENAME A TASK OR CHANGE ITS PLANNED DATES (LOGGED)");
                                 if !tasks.iter().any(|t| t.0 == self.f.rs_task) { self.f.rs_task = tasks[0].0.clone(); }
-                                if self.f.rs_for != self.f.rs_task { if let Some(t) = c.p.tasks.iter().find(|t| t.id == self.f.rs_task) { self.f.rs_for = t.id.clone(); self.f.rs_start = iso(t.start); self.f.rs_end = iso(t.end); } }
+                                if self.f.rs_for != self.f.rs_task { if let Some(t) = c.p.tasks.iter().find(|t| t.id == self.f.rs_task) { self.f.rs_for = t.id.clone(); self.f.rs_start = iso(t.start); self.f.rs_end = iso(t.end); self.f.rs_name = t.name.clone(); } }
                                 ui.horizontal(|ui| { task_combo(ui, "rs1", &mut self.f.rs_task, &tasks, None); edit(ui, &mut self.f.rs_start, 90.0, "start"); edit(ui, &mut self.f.rs_end, 90.0, "end"); });
+                                ui.horizontal(|ui| { edit(ui, &mut self.f.rs_name, 330.0, "task name"); });
                                 ui.horizontal(|ui| { edit(ui, &mut self.f.rs_note, 330.0, "reason, e.g. design revised"); });
                                 let (ds, de) = (parse_date(&self.f.rs_start), parse_date(&self.f.rs_end));
                                 let ok = matches!((ds, de), (Some(a), Some(b)) if b > a) && !self.f.rs_note.trim().is_empty();
-                                if primary(ui, "Apply new dates", ok) { acts.push(Act::Resched(pid.clone(), self.f.rs_task.clone(), ds.unwrap(), de.unwrap(), self.f.rs_note.trim().to_string())); self.f.rs_note.clear(); }
+                                if primary(ui, "Apply new dates", ok) { acts.push(Act::Resched(pid.clone(), self.f.rs_task.clone(), ds.unwrap(), de.unwrap(), self.f.rs_note.trim().to_string(), self.f.rs_name.trim().to_string())); self.f.rs_note.clear(); }
                                 if !ok { ui.label(small("Dates as YYYY-MM-DD, end after start, and a reason is required.")); }
                             }
                             sec(ui, "ADD A TASK");
                             ui.horizontal(|ui| { edit(ui, &mut self.f.at_name, 180.0, "task name"); edit(ui, &mut self.f.at_start, 90.0, "start"); edit(ui, &mut self.f.at_end, 90.0, "end"); task_combo(ui, "atd", &mut self.f.at_dep, &tasks, Some("no predecessor")); });
                             let (ds, de) = (parse_date(&self.f.at_start), parse_date(&self.f.at_end));
                             if primary(ui, "Add task", matches!((ds, de), (Some(a), Some(b)) if b > a) && !self.f.at_name.trim().is_empty()) { acts.push(Act::AddTask(pid.clone(), self.f.at_name.trim().to_string(), ds.unwrap(), de.unwrap(), self.f.at_dep.clone())); self.f.at_name.clear(); self.f.at_start.clear(); self.f.at_end.clear(); self.f.at_dep.clear(); }
-                            sec(ui, "RESPONSIBLE PERSON, REJECTED LOTS, SPEND");
-                            if self.f.det_for != pid { self.f.det_for = pid.clone(); self.f.own = c.p.owner.clone(); self.f.rej = c.p.rejected.to_string(); self.f.spend = format!("{}", c.p.spent); }
-                            ui.horizontal(|ui| { ui.label(small("Responsible")); edit(ui, &mut self.f.own, 150.0, "name"); ui.label(small("Rejected lots")); edit(ui, &mut self.f.rej, 40.0, "0"); });
-                            if ui.button("Save").clicked() { acts.push(Act::Details(pid.clone(), self.f.own.trim().to_string(), self.f.rej.trim().parse().unwrap_or(c.p.rejected))); }
+                            sec(ui, "PROJECT DETAILS");
+                            if self.f.det_for != pid { self.f.det_for = pid.clone(); self.f.own = c.p.owner.clone(); self.f.rej = c.p.rejected.to_string(); self.f.spend = format!("{}", c.p.spent); self.f.nm = c.p.name.clone(); self.f.ct = c.p.contractor.clone(); self.f.bg = format!("{}", c.p.budget); }
+                            ui.horizontal(|ui| { ui.label(small("Name")); edit(ui, &mut self.f.nm, 250.0, "project name"); ui.label(small("Contractor")); edit(ui, &mut self.f.ct, 130.0, "contractor"); });
+                            ui.horizontal(|ui| { ui.label(small("Responsible")); edit(ui, &mut self.f.own, 130.0, "name"); ui.label(small("Rejected lots")); edit(ui, &mut self.f.rej, 40.0, "0"); ui.label(small("Budget (Rs lakh)")); edit(ui, &mut self.f.bg, 60.0, "0"); });
+                            if ui.button("Save details").clicked() { match (self.f.rej.trim().parse::<u32>(), self.f.bg.trim().parse::<f64>()) { (Ok(r), Ok(b)) if b >= 0.0 && !self.f.nm.trim().is_empty() => acts.push(Act::Details(pid.clone(), self.f.own.trim().to_string(), r, self.f.nm.trim().to_string(), self.f.ct.trim().to_string(), b)), _ => self.notice = "Name is required; rejected lots and budget must be numbers.".into() } }
                             ui.horizontal(|ui| { ui.label(small("Spent (Rs lakh)")); edit(ui, &mut self.f.spend, 70.0, "0"); edit(ui, &mut self.f.spend_note, 240.0, "source, e.g. RA bill 4"); });
-                            if ui.button("Update spend").clicked() { if let Ok(v) = self.f.spend.trim().parse::<f64>() { acts.push(Act::Spend(pid.clone(), v, self.f.spend_note.trim().to_string())); self.f.spend_note.clear(); } else { self.notice = "Spend must be a number.".into(); } }
+                            if ui.button("Update spend").clicked() { if let Ok(v) = self.f.spend.trim().parse::<f64>().and_then(|v| if v >= 0.0 { Ok(v) } else { "x".parse::<f64>() }) { acts.push(Act::Spend(pid.clone(), v, self.f.spend_note.trim().to_string())); self.f.spend_note.clear(); } else { self.notice = "Spend must be a number.".into(); } }
+                            sec(ui, "ARCHIVE");
+                            ui.label(small("Hides the project from the watch list. Its tasks, blockers and history are kept, and Archived in the list brings it back."));
+                            if c.p.arch { if ui.button("Restore project").clicked() { acts.push(Act::ArchProject(pid.clone(), false)); } }
+                            else if ui.button(if self.f.confirm == "arch" { "Confirm archive" } else { "Archive project" }).clicked() { if self.f.confirm == "arch" { acts.push(Act::ArchProject(pid.clone(), true)); self.f.confirm.clear(); } else { self.f.confirm = "arch".into(); } }
                         }
                         Tab::Blockers => {
                             sec(ui, "OPEN");
@@ -635,11 +667,15 @@ impl eframe::App for App {
                                             let od = days_over(&b.due, asof).map(|d| format!("  ·  {} d overdue", d)).unwrap_or_default();
                                             ui.label(small(&format!("{}  ·  task: {}  ·  owner {}  ·  due {}{}  ·  opened {}", b.kind, self.store().tname(&pid, &b.task), b.owner, b.due, od, b.opened)));
                                         });
-                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { if ui.button("Resolve").clicked() { acts.push(Act::Resolve(b.id, self.f.res_note.trim().to_string())); self.f.res_note.clear(); } });
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.button("Resolve").clicked() { acts.push(Act::Resolve(b.id, self.f.res_note.trim().to_string())); self.f.res_note.clear(); }
+                                            if ui.add(egui::Button::new(RichText::new("Edit").size(12.0))).clicked() { self.f.b_edit = b.id; self.f.b_text = b.text.clone(); self.f.b_owner = b.owner.clone(); self.f.b_due = b.due.clone(); self.f.b_kind = b.kind.clone(); self.f.b_task = b.task.clone(); }
+                                            if ui.add(egui::Button::new(RichText::new("Withdraw").size(12.0).color(MUTED))).clicked() { acts.push(Act::Withdraw(b.id)); }
+                                        });
                                     });
                                 });
                             }
-                            sec(ui, "LOG A BLOCKER");
+                            sec(ui, if self.f.b_edit > 0 { "EDIT BLOCKER" } else { "LOG A BLOCKER" });
                             ui.horizontal(|ui| {
                                 task_combo(ui, "bt", &mut self.f.b_task, &tasks, Some("whole project"));
                                 if self.f.b_kind.is_empty() { self.f.b_kind = KINDS[0].to_string(); }
@@ -648,10 +684,15 @@ impl eframe::App for App {
                             ui.horizontal(|ui| { edit(ui, &mut self.f.b_text, 330.0, "what is blocking the work"); });
                             ui.horizontal(|ui| { edit(ui, &mut self.f.b_owner, 150.0, "who clears it"); edit(ui, &mut self.f.b_due, 100.0, "due YYYY-MM-DD"); });
                             let ok = !self.f.b_text.trim().is_empty() && !self.f.b_owner.trim().is_empty() && parse_date(&self.f.b_due).is_some();
-                            if primary(ui, "Log blocker", ok) { acts.push(Act::AddBlocker(Blocker { id: 0, pid: pid.clone(), task: self.f.b_task.clone(), kind: self.f.b_kind.clone(), text: self.f.b_text.trim().to_string(), owner: self.f.b_owner.trim().to_string(), due: self.f.b_due.trim().to_string(), open: true, opened: iso(asof), resolved: String::new() })); self.f.b_text.clear(); self.f.b_owner.clear(); self.f.b_due.clear(); }
+                            if self.f.b_edit > 0 {
+                                ui.horizontal(|ui| {
+                                    if primary(ui, "Save changes", ok) { acts.push(Act::EditBlocker(self.f.b_edit, self.f.b_text.trim().to_string(), self.f.b_owner.trim().to_string(), self.f.b_due.trim().to_string(), self.f.b_kind.clone(), self.f.b_task.clone())); self.f.b_edit = 0; self.f.b_text.clear(); self.f.b_owner.clear(); self.f.b_due.clear(); }
+                                    if ui.button("Cancel").clicked() { self.f.b_edit = 0; self.f.b_text.clear(); self.f.b_owner.clear(); self.f.b_due.clear(); }
+                                });
+                            } else if primary(ui, "Log blocker", ok) { acts.push(Act::AddBlocker(Blocker { id: 0, pid: pid.clone(), task: self.f.b_task.clone(), kind: self.f.b_kind.clone(), text: self.f.b_text.trim().to_string(), owner: self.f.b_owner.trim().to_string(), due: self.f.b_due.trim().to_string(), open: true, opened: iso(asof), resolved: String::new() })); self.f.b_text.clear(); self.f.b_owner.clear(); self.f.b_due.clear(); }
                             if !ok { ui.label(small("A description, a named owner and a due date are required, so every blocker has someone accountable.")); }
                             let done: Vec<&&Blocker> = mine_b.iter().filter(|b| !b.open).collect();
-                            if !done.is_empty() { sec(ui, "RESOLVED"); for b in done { ui.label(small(&format!("{}  ·  {}  ·  owner {}  ·  resolved {}", b.kind, b.text, b.owner, b.resolved))); } }
+                            if !done.is_empty() { sec(ui, "RESOLVED"); for b in done { ui.horizontal(|ui| { ui.label(small(&format!("{}  ·  {}  ·  owner {}  ·  closed {}", b.kind, b.text, b.owner, b.resolved))); if ui.add(egui::Button::new(RichText::new("Reopen").size(12.0)).fill(Color32::TRANSPARENT)).clicked() { acts.push(Act::Reopen(b.id)); } }); } }
                         }
                         Tab::Updates => {
                             sec(ui, "RECORD AN UPDATE");
@@ -715,7 +756,7 @@ impl eframe::App for App {
                 if primary(ui, "Create project", ok) {
                     let n = self.store().projects.len() + 1; let mut id = format!("W{:03}", n);
                     while self.store().projects.iter().any(|p| p.id == id) { id.push('x'); }
-                    acts.push(Act::NewProject(Project { id: id.clone(), name: self.f.np_name.trim().into(), contractor: self.f.np_contractor.trim().into(), owner: self.f.np_owner.trim().into(), budget: self.f.np_budget.trim().parse().unwrap_or(0.0), spent: 0.0, rejected: 0, tasks: vec![] }));
+                    acts.push(Act::NewProject(Project { id: id.clone(), name: self.f.np_name.trim().into(), contractor: self.f.np_contractor.trim().into(), owner: self.f.np_owner.trim().into(), budget: self.f.np_budget.trim().parse().unwrap_or(0.0), spent: 0.0, rejected: 0, tasks: vec![], arch: false }));
                     self.sel = Some(id); self.tab = Tab::Plan; self.new_open = false; self.f.np_name.clear(); self.f.np_contractor.clear(); self.f.np_owner.clear(); self.f.np_budget.clear();
                 }
             });
@@ -735,7 +776,7 @@ fn main() -> eframe::Result {
         let dir = data_dir();
         let ws = Store::load(dir.join("workspace.pw"), false).unwrap_or_else(|| Store::new(dir.join("workspace.pw"), false));
         let sm = Store::load(dir.join("sample.pw"), true).unwrap_or_else(sample_store);
-        let mut app = App { asof_buf: ws.asof.clone(), ws, sm, use_sample: false, sel: None, tab: Tab::Overview, actions_view: false, what_task: None, what_slip: 0.0, copied: false, f: Forms::default(), notice: String::new(), new_open: false, confirm_reset: false };
+        let mut app = App { asof_buf: ws.asof.clone(), ws, sm, use_sample: false, sel: None, tab: Tab::Overview, actions_view: false, what_task: None, what_slip: 0.0, copied: false, f: Forms::default(), notice: String::new(), new_open: false, confirm_reset: false, show_arch: false };
         let mut sample_flag = false;
         for a in args.iter().skip(1) { if a == "--sample" { sample_flag = true; } else if let Ok(t) = std::fs::read_to_string(a) { app.import_text(&t); } }
         if sample_flag { app.switch(true); }
