@@ -14,20 +14,28 @@ jobs:
             ~/.cargo/registry
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+      - name: Diagnostic console build (same code, console subsystem so errors are visible)
+        shell: pwsh
+        run: |
+          (Get-Content src/main.rs) | Where-Object { $_ -notmatch 'windows_subsystem' } | Set-Content src/main.rs
+          cargo build --release --target-dir target-diag
+          git checkout src/main.rs
+      - name: Startup check (launch console build 8s, capture all output)
+        shell: pwsh
+        env:
+          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome
+          RUST_BACKTRACE: "1"
+        run: |
+          $o = "$env:RUNNER_TEMP\out.txt"; $e = "$env:RUNNER_TEMP\err.txt"
+          $p = Start-Process -FilePath target-diag\release\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
+          Start-Sleep -Seconds 8
+          Write-Host "--- stdout"; Get-Content $o -ErrorAction SilentlyContinue | Write-Host
+          Write-Host "--- stderr"; Get-Content $e -ErrorAction SilentlyContinue | Write-Host
+          Write-Host "--- opengl32 present:"; Test-Path "$env:WINDIR\System32\opengl32.dll" | Write-Host
+          if ($p.HasExited) { Write-Host "EXITED early, code $($p.ExitCode)"; exit 1 }
+          Write-Host "still running after 8s"; Stop-Process -Id $p.Id -Force
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
           name: project-watch-windows
           path: target/release/project-watch.exe
-      - name: Startup smoke check (informational; runner has no GPU)
-        continue-on-error: true
-        shell: pwsh
-        env:
-          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome
-        run: |
-          $p = Start-Process -FilePath target\release\project-watch.exe -PassThru
-          Start-Sleep -Seconds 8
-          if ($p.HasExited) { Write-Error "exited early with code $($p.ExitCode)"; exit 1 }
-          Write-Host "still running after 8s, pid $($p.Id)"
-          Stop-Process -Id $p.Id -Force
-          Get-ChildItem $env:PROJECT_WATCH_HOME -ErrorAction SilentlyContinue | Out-String | Write-Host
