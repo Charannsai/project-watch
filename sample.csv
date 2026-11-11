@@ -1,0 +1,29 @@
+project_id,project,contractor,budget_lakh,spent_lakh,rejected_lots,task_id,task,start,end,pct_complete,depends_on
+P101,33/11 kV substation - Zone A,Contractor A,420,300,0,P101-1,Site prep,2026-06-01,2026-07-15,100,
+P101,33/11 kV substation - Zone A,Contractor A,420,300,0,P101-2,Foundation,2026-07-10,2026-09-10,100,P101-1
+P101,33/11 kV substation - Zone A,Contractor A,420,300,0,P101-3,Equipment erection,2026-09-05,2026-12-05,66,P101-2
+P101,33/11 kV substation - Zone A,Contractor A,420,300,0,P101-4,Testing and charging,2026-12-01,2026-12-31,0,P101-3
+P102,11 kV feeder bifurcation - Zone B,Contractor B,180,150,0,P102-1,Survey,2026-07-01,2026-07-31,100,
+P102,11 kV feeder bifurcation - Zone B,Contractor B,180,150,0,P102-2,Pole erection,2026-08-01,2026-10-15,100,P102-1
+P102,11 kV feeder bifurcation - Zone B,Contractor B,180,150,0,P102-3,Conductor stringing,2026-10-10,2026-12-10,80,P102-2
+P102,11 kV feeder bifurcation - Zone B,Contractor B,180,150,0,P102-4,Commissioning,2026-12-10,2026-12-25,0,P102-3
+P103,DTR augmentation - Zone C,Contractor C,95,40,2,P103-1,Material receipt,2026-08-15,2026-09-30,80,
+P103,DTR augmentation - Zone C,Contractor C,95,40,2,P103-2,Foundation,2026-09-25,2026-11-05,60,P103-1
+P103,DTR augmentation - Zone C,Contractor C,95,40,2,P103-3,DTR installation,2026-11-01,2026-12-15,25,P103-2
+P103,DTR augmentation - Zone C,Contractor C,95,40,2,P103-4,Commissioning,2026-12-15,2026-12-30,0,P103-3
+P104,LT line reconductoring - Zone D,Contractor D,60,42,0,P104-1,Survey,2026-08-01,2026-08-20,100,
+P104,LT line reconductoring - Zone D,Contractor D,60,42,0,P104-2,Conductor replacement,2026-08-20,2026-11-20,92,P104-1
+P104,LT line reconductoring - Zone D,Contractor D,60,42,0,P104-3,Testing,2026-11-20,2026-12-05,0,P104-2
+P105,132 kV line bay extension - Zone E,Contractor E,650,520,1,P105-1,Design approval,2026-05-01,2026-06-30,100,
+P105,132 kV line bay extension - Zone E,Contractor E,650,520,1,P105-2,Civil works,2026-07-01,2026-10-01,100,P105-1
+P105,132 kV line bay extension - Zone E,Contractor E,650,520,1,P105-3,Bay equipment,2026-09-20,2027-01-15,62,P105-2
+P105,132 kV line bay extension - Zone E,Contractor E,650,520,1,P105-4,Commissioning,2027-01-15,2027-02-15,0,P105-3
+P106,Capacitor bank installation - Zone F,Contractor F,35,38,0,P106-1,Procurement,2026-08-01,2026-09-15,100,
+P106,Capacitor bank installation - Zone F,Contractor F,35,38,0,P106-2,Installation,2026-09-15,2026-11-15,95,P106-1
+P106,Capacitor bank installation - Zone F,Contractor F,35,38,0,P106-3,Commissioning,2026-11-15,2026-11-30,0,P106-2
+P107,Smart-meter backhaul - Zone G,Contractor G,120,30,3,P107-1,Vendor mobilisation,2026-09-01,2026-10-01,95,
+P107,Smart-meter backhaul - Zone G,Contractor G,120,30,3,P107-2,Cabinet install,2026-10-01,2026-12-01,38,P107-1
+P107,Smart-meter backhaul - Zone G,Contractor G,120,30,3,P107-3,Integration test,2026-12-01,2027-01-15,0,P107-2
+P108,Street-light feeder upgrade - Zone H,Contractor H,50,26,0,P108-1,Survey,2026-09-01,2026-09-20,100,
+P108,Street-light feeder upgrade - Zone H,Contractor H,50,26,0,P108-2,Cable laying,2026-09-20,2026-11-30,75,P108-1
+P108,Street-light feeder upgrade - Zone H,Contractor H,50,26,0,P108-3,Energisation,2026-11-30,2026-12-15,0,P108-2
