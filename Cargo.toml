@@ -9,6 +9,7 @@ eframe = { version = "0.31", default-features = false, features = ["glow", "x11"
 
 [target.'cfg(windows)'.dependencies]
 rfd = "0.15"
+eframe = { version = "0.31", default-features = false, features = ["wgpu"] }
 
 [profile.release]
 opt-level = 2

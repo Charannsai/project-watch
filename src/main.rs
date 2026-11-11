@@ -785,6 +785,8 @@ impl eframe::App for App {
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     let opts = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([980.0, 600.0]).with_title("Project Watch"), ..Default::default() };
+    #[cfg(windows)]
+    let opts = eframe::NativeOptions { renderer: eframe::Renderer::Wgpu, ..opts };
     eframe::run_native("Project Watch", opts, Box::new(move |cc| {
         setup(&cc.egui_ctx);
         let dir = data_dir();
