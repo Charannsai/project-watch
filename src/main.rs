@@ -433,6 +433,17 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _f: &mut eframe::Frame) {
+        // First frame: fit the window to the monitor (the default 1280x800 can be larger than a small screen).
+        static FITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !FITTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            if let Some(ms) = ctx.input(|i| i.viewport().monitor_size) {
+                let w = (ms.x * 0.92).min(1280.0).max(640.0);
+                let h = (ms.y * 0.85).min(800.0).max(480.0);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(w, h)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(((ms.x - w) / 2.0).max(0.0), ((ms.y - h) / 2.0 - 20.0).max(0.0))));
+            }
+        }
+        let narrow = ctx.screen_rect().width() < 1000.0;
         let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
         for d in dropped {
             if let Some(b) = &d.bytes { let t = String::from_utf8_lossy(b).to_string(); self.import_text(&t); }
@@ -467,7 +478,7 @@ impl eframe::App for App {
                     let r = ui.add(egui::Button::new(RichText::new(nm).size(12.5).color(if on { Color32::WHITE } else { INK })).fill(if on { INK } else { Color32::TRANSPARENT }));
                     if r.clicked() && !on { switch_to = Some(s); }
                 }
-                if sample { ui.label(small("SAMPLE DATA - invented projects")); }
+                if sample { ui.label(small(if narrow { "SAMPLE" } else { "SAMPLE DATA - invented projects" })); }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if sample {
                         if ui.button(if self.confirm_reset { "Confirm reset" } else { "Reset sample" }).clicked() {
@@ -506,15 +517,16 @@ impl eframe::App for App {
                 });
             });
         } else {
-            egui::SidePanel::left("list").exact_width(400.0).frame(egui::Frame::new().fill(Color32::WHITE).stroke(Stroke::new(1.0, LINE))).show(ctx, |ui| {
+            egui::SidePanel::left("list").exact_width((ctx.screen_rect().width() * 0.36).clamp(250.0, 400.0)).frame(egui::Frame::new().fill(Color32::WHITE).stroke(Stroke::new(1.0, LINE))).show(ctx, |ui| {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
-                    ui.add_space(20.0);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add_space(14.0);
                     for (nm, a) in [("Projects", false), ("Actions", true)] {
                         let on = self.actions_view == a;
                         if ui.add(egui::Button::new(if on { semi(nm, 13.0) } else { RichText::new(nm).size(13.0).color(MUTED) }).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() { self.actions_view = a; }
                     }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(16.0); if ui.button("New project").clicked() { self.new_open = true; } if ui.add(egui::Button::new(RichText::new(if self.show_arch { "Hide archived" } else { "Archived" }).size(12.0).color(MUTED)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() { self.show_arch = !self.show_arch; } });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(10.0); if ui.button("New project").clicked() { self.new_open = true; } if ui.add(egui::Button::new(RichText::new(if self.show_arch { "Hide archived" } else { "Archived" }).size(12.0).color(MUTED)).fill(Color32::TRANSPARENT).stroke(Stroke::NONE)).clicked() { self.show_arch = !self.show_arch; } });
                 });
                 ui.add_space(4.0);
                 egui::ScrollArea::vertical().show(ui, |ui| {
@@ -528,7 +540,7 @@ impl eframe::App for App {
                             if selected { ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())), 0.0, INK); }
                             ui.painter().line_segment([Pos2::new(rect.left(), rect.bottom()), Pos2::new(rect.right(), rect.bottom())], Stroke::new(1.0, LINE));
                             mark(ui.painter(), Pos2::new(rect.left() + 24.0, rect.center().y), c.status);
-                            ui.painter().text(Pos2::new(rect.left() + 42.0, rect.top() + 14.0), egui::Align2::LEFT_TOP, &c.p.name, egui::FontId::new(13.5, FontFamily::Name("semi".into())), INK);
+                            ui.painter().with_clip_rect(Rect::from_min_max(rect.min, Pos2::new(rect.right() - 104.0, rect.bottom()))).text(Pos2::new(rect.left() + 42.0, rect.top() + 14.0), egui::Align2::LEFT_TOP, &c.p.name, egui::FontId::new(13.5, FontFamily::Name("semi".into())), INK);
                             let bl = if c.open_blockers > 0 { format!("  ·  {} open blocker{}", c.open_blockers, if c.open_blockers == 1 { "" } else { "s" }) } else { String::new() };
                             ui.painter().text(Pos2::new(rect.left() + 42.0, rect.top() + 36.0), egui::Align2::LEFT_TOP, format!("{}  ·  {} flag{}{}", if c.p.owner.is_empty() { &c.p.contractor } else { &c.p.owner }, c.flags.len(), if c.flags.len() == 1 { "" } else { "s" }, bl), egui::FontId::proportional(12.0), MUTED);
                             let r = if c.slip > 0 { format!("{}  +{} d", label(c.status), c.slip) } else { label(c.status).to_string() };
@@ -591,7 +603,8 @@ impl eframe::App for App {
                     match self.tab {
                         Tab::Overview => {
                             ui.horizontal(|ui| {
-                                let kp = |ui: &mut egui::Ui, v: String, l: &str| { ui.vertical(|ui| { ui.set_width(150.0); ui.label(semi(&v, 22.0)); ui.label(small(l)); }); };
+                                let kw = ((ui.available_width() - 30.0) / 4.0).clamp(90.0, 150.0);
+                                let kp = |ui: &mut egui::Ui, v: String, l: &str| { ui.vertical(|ui| { ui.set_width(kw); ui.label(semi(&v, 22.0)); ui.label(small(l)); }); };
                                 kp(ui, format!("{:.0}% / {:.0}%", c.actual * 100.0 * ease as f64, c.planned * 100.0 * ease as f64), "done / planned today");
                                 kp(ui, c.spi.map(|x| format!("{:.2}", x)).unwrap_or("-".into()), "schedule ratio");
                                 kp(ui, c.cpi.map(|x| format!("{:.2}", x)).unwrap_or("-".into()), "cost ratio");
@@ -633,7 +646,7 @@ impl eframe::App for App {
                                 ui.horizontal(|ui| {
                                     let key = format!("t{}", x.t.id);
                                     if ui.add(egui::Button::new(RichText::new(if self.f.confirm == key { "Confirm remove" } else { "Remove" }).size(12.0).color(MUTED)).fill(Color32::TRANSPARENT)).clicked() { if self.f.confirm == key { acts.push(Act::ArchTask(pid.clone(), x.t.id.clone(), true)); self.f.confirm.clear(); } else { self.f.confirm = key; } }
-                                    ui.set_min_width(560.0); ui.label(semi(&x.t.name, 13.0)); ui.label(small(&format!("{} to {}  ·  {:.0}%  ·  forecast {}{}", iso(x.t.start), iso(x.t.end), x.t.pct * 100.0, fmt(x.fend), if x.t.dep.is_empty() { String::new() } else { format!("  ·  after {}", tasks.iter().find(|t| t.0 == x.t.dep).map(|t| t.1.clone()).unwrap_or(x.t.dep.clone())) })));
+                                    ui.set_min_width(ui.available_width().min(560.0)); ui.label(semi(&x.t.name, 13.0)); ui.label(small(&format!("{} to {}  ·  {:.0}%  ·  forecast {}{}", iso(x.t.start), iso(x.t.end), x.t.pct * 100.0, fmt(x.fend), if x.t.dep.is_empty() { String::new() } else { format!("  ·  after {}", tasks.iter().find(|t| t.0 == x.t.dep).map(|t| t.1.clone()).unwrap_or(x.t.dep.clone())) })));
                                 });
                             }
                             for t in c.p.tasks.iter().filter(|t| t.arch) {
@@ -732,7 +745,8 @@ impl eframe::App for App {
                                 let behind = parse_date(&pl.committed).map(|d| c.fend - d).unwrap_or(0.0).round() as i64;
                                 sec(ui, "ACTIVE PLAN");
                                 ui.horizontal(|ui| {
-                                    for (v, l) in [(pl.committed.clone(), "committed finish"), (iso(c.fend), "current forecast"), (format!("+{} d", pl.base_slip), "slip when plan began"), (format!("{:+} d", c.slip), "slip now")] { ui.vertical(|ui| { ui.set_width(150.0); ui.label(semi(&v, 20.0)); ui.label(small(l)); }); }
+                                    let kw = ((ui.available_width() - 30.0) / 4.0).clamp(90.0, 150.0);
+                                    for (v, l) in [(pl.committed.clone(), "committed finish"), (iso(c.fend), "current forecast"), (format!("+{} d", pl.base_slip), "slip when plan began"), (format!("{:+} d", c.slip), "slip now")] { ui.vertical(|ui| { ui.set_width(kw); ui.label(semi(&v, 20.0)); ui.label(small(l)); }); }
                                 });
                                 ui.add_space(8.0);
                                 ui.label(if behind > 0 { format!("Not on course: the forecast is {} days after the committed finish.", behind) } else { "On course: the forecast is within the committed finish.".to_string() });
@@ -749,7 +763,7 @@ impl eframe::App for App {
                                 ui.label(small("Agree a finish date with the contractor, name who owns the plan and write the steps. The tool then tracks the forecast against that commitment."));
                                 ui.add_space(6.0);
                                 ui.horizontal(|ui| { edit(ui, &mut self.f.pl_date, 130.0, "committed finish YYYY-MM-DD"); edit(ui, &mut self.f.pl_owner, 170.0, "plan owner"); });
-                                ui.add(egui::TextEdit::multiline(&mut self.f.pl_steps).desired_rows(4).desired_width(520.0).hint_text("steps, one per line"));
+                                ui.add(egui::TextEdit::multiline(&mut self.f.pl_steps).desired_rows(4).desired_width(ui.available_width().min(520.0)).hint_text("steps, one per line"));
                                 let ok = parse_date(&self.f.pl_date).is_some() && !self.f.pl_owner.trim().is_empty() && !self.f.pl_steps.trim().is_empty();
                                 if primary(ui, "Start plan", ok) { acts.push(Act::StartPlan(Plan { pid: pid.clone(), committed: self.f.pl_date.trim().to_string(), base_slip: c.slip.max(0), steps: self.f.pl_steps.trim().to_string(), owner: self.f.pl_owner.trim().to_string(), created: iso(asof) })); self.f.pl_steps.clear(); self.f.pl_date.clear(); self.f.pl_owner.clear(); }
                             }
@@ -784,7 +798,7 @@ impl eframe::App for App {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
-    let opts = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([980.0, 600.0]).with_title("Project Watch"), ..Default::default() };
+    let opts = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]).with_min_inner_size([640.0, 460.0]).with_title("Project Watch"), ..Default::default() };
     eframe::run_native("Project Watch", opts, Box::new(move |cc| {
         setup(&cc.egui_ctx);
         let dir = data_dir();

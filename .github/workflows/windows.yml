@@ -14,59 +14,51 @@ jobs:
             ~/.cargo/registry
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
-      - name: Diagnostic console build (same code, console subsystem so errors are visible)
-        shell: pwsh
-        run: |
-          (Get-Content src/main.rs) | Where-Object { $_ -notmatch 'windows_subsystem' } | Set-Content src/main.rs
-          cargo build --release --target-dir target-diag
-          git checkout src/main.rs
-      - name: Startup check A - plain runner (no GPU, OpenGL 1.1 only; failure expected, shows the exact error)
-        continue-on-error: true
-        shell: pwsh
-        env:
-          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome-a
-          RUST_BACKTRACE: "1"
-        run: |
-          $o = "$env:RUNNER_TEMP\a-out.txt"; $e = "$env:RUNNER_TEMP\a-err.txt"
-          $p = Start-Process -FilePath target-diag\release\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-          Start-Sleep -Seconds 8
-          Get-Content $e -ErrorAction SilentlyContinue | Write-Host
-          if ($p.HasExited) { Write-Host "A: exited early, code $($p.ExitCode) (runner has no OpenGL 2.0 driver)"; exit 1 }
-          Stop-Process -Id $p.Id -Force
-      - name: Startup check B - same exe with a software OpenGL DLL (Qt opengl32sw / Mesa llvmpipe), screenshot
-        shell: pwsh
-        env:
-          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome-b
-          RUST_BACKTRACE: "1"
-          GALLIUM_DRIVER: llvmpipe
-        run: |
-          Invoke-WebRequest -Uri https://download.qt.io/development_releases/prebuilt/llvmpipe/windows/opengl32sw-64-mesa_12_0_rc2.7z -OutFile gl.7z
-          7z x gl.7z -ogl -y | Out-Null
-          Get-ChildItem gl -Recurse | Select-Object FullName,Length | Out-String | Write-Host
-          New-Item -ItemType Directory -Force -Path testdir | Out-Null
-          Copy-Item target-diag\release\project-watch.exe testdir\
-          $dll = Get-ChildItem gl -Recurse -Filter opengl32sw.dll | Select-Object -First 1
-          Copy-Item $dll.FullName testdir\opengl32.dll
-          $o = "$env:RUNNER_TEMP\b-out.txt"; $e = "$env:RUNNER_TEMP\b-err.txt"
-          $p = Start-Process -FilePath testdir\project-watch.exe -PassThru -RedirectStandardOutput $o -RedirectStandardError $e
-          Start-Sleep -Seconds 12
-          Get-Content $e -ErrorAction SilentlyContinue | Write-Host
-          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-          $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
-          $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
-          $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
-          New-Item -ItemType Directory -Force -Path shots | Out-Null
-          $bmp.Save("shots\windows-startup.png")
-          if ($p.HasExited) { Write-Host "B: EXITED early, code $($p.ExitCode)"; exit 1 }
-          Write-Host "B: still running after 12s"; Stop-Process -Id $p.Id -Force
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: startup-screenshot
-          path: shots/
-          if-no-files-found: ignore
       - run: cargo build --release
       - uses: actions/upload-artifact@v4
         with:
           name: project-watch-windows
           path: target/release/project-watch.exe
+      # The runner has no GPU and only OpenGL 1.1, so the app cannot open there on its own.
+      # For testing only, a software OpenGL DLL (Qt opengl32sw, Mesa llvmpipe) is placed next to a COPY of the final exe.
+      - name: Test final exe - launch, import CSV by argument, restart (software OpenGL, test only)
+        shell: pwsh
+        env:
+          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome
+        run: |
+          Invoke-WebRequest -Uri https://download.qt.io/development_releases/prebuilt/llvmpipe/windows/opengl32sw-64-mesa_12_0_rc2.7z -OutFile gl.7z
+          7z x gl.7z -ogl -y | Out-Null
+          New-Item -ItemType Directory -Force -Path testdir, shots | Out-Null
+          Copy-Item target\release\project-watch.exe testdir\
+          $dll = Get-ChildItem gl -Recurse -Filter opengl32sw.dll | Select-Object -First 1
+          Copy-Item $dll.FullName testdir\opengl32.dll
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          function Shot($name) {
+            $b = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+            $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Left, $b.Top, 0, 0, $bmp.Size)
+            $bmp.Save("shots\$name.png")
+          }
+          Write-Host "SHA256 of tested exe:"; (Get-FileHash testdir\project-watch.exe -Algorithm SHA256).Hash
+          # 1) first launch: empty workspace
+          $p = Start-Process -FilePath testdir\project-watch.exe -PassThru
+          Start-Sleep -Seconds 10; Shot "1-first-launch"
+          if ($p.HasExited) { Write-Host "1: EXITED early, code $($p.ExitCode)"; exit 1 }
+          Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 2
+          # 2) launch with the CSV as an argument: imports projects and saves them
+          $p = Start-Process -FilePath testdir\project-watch.exe -ArgumentList "sample.csv" -PassThru
+          Start-Sleep -Seconds 10; Shot "2-after-import"
+          if ($p.HasExited) { Write-Host "2: EXITED early, code $($p.ExitCode)"; exit 1 }
+          Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 2
+          Get-ChildItem $env:PROJECT_WATCH_HOME | Out-String | Write-Host
+          # 3) relaunch with no arguments: projects must still be there
+          $p = Start-Process -FilePath testdir\project-watch.exe -PassThru
+          Start-Sleep -Seconds 10; Shot "3-after-restart"
+          if ($p.HasExited) { Write-Host "3: EXITED early, code $($p.ExitCode)"; exit 1 }
+          Stop-Process -Id $p.Id -Force
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-screenshots
+          path: shots/
+          if-no-files-found: ignore
