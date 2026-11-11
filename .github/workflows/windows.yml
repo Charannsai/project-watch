@@ -19,3 +19,14 @@ jobs:
         with:
           name: project-watch-windows
           path: target/release/project-watch.exe
+      - name: Startup smoke check (launch 8s, must still be running)
+        shell: pwsh
+        env:
+          PROJECT_WATCH_HOME: ${{ runner.temp }}\pwhome
+        run: |
+          $p = Start-Process -FilePath target\release\project-watch.exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { Write-Error "exited early with code $($p.ExitCode)"; exit 1 }
+          Write-Host "still running after 8s, pid $($p.Id)"
+          Stop-Process -Id $p.Id -Force
+          Get-ChildItem $env:PROJECT_WATCH_HOME -ErrorAction SilentlyContinue | Out-String | Write-Host
